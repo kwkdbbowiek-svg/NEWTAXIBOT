@@ -10,9 +10,21 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
     )
     builder.row(
         KeyboardButton(text="💱 Komissiyani tahrirlash"),
-        KeyboardButton(text="📊 Statistika"),
+        KeyboardButton(text="🎫 Yo'lkira narxlari"),
     )
-    builder.row(KeyboardButton(text="📣 Reklama yuborish"))
+    builder.row(
+        KeyboardButton(text="📊 Statistika"),
+        KeyboardButton(text="📣 Reklama yuborish"),
+    )
+    return builder.as_markup(resize_keyboard=True)
+
+
+def price_route_keyboard() -> ReplyKeyboardMarkup:
+    """Yo'lkira narxini o'zgartirish uchun yo'nalish tanlash."""
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text="🚌 Toshkent → Bekobod narxi"))
+    builder.row(KeyboardButton(text="🚌 Bekobod → Toshkent narxi"))
+    builder.row(KeyboardButton(text="❌ Bekor qilish"))
     return builder.as_markup(resize_keyboard=True)
 
 

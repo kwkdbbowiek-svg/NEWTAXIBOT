@@ -311,6 +311,18 @@ async def get_commission(session: AsyncSession) -> float:
     return float(value)
 
 
+async def get_route_price(session: AsyncSession, route_key: str) -> int:
+    """
+    route_key: 'price_tashkent_bekobod' yoki 'price_bekobod_tashkent'
+    """
+    value = await get_setting(session, route_key, "0")
+    return int(float(value))
+
+
+async def set_route_price(session: AsyncSession, route_key: str, price: int) -> None:
+    await set_setting(session, route_key, str(price))
+
+
 # ─────────────────────────────────────────────
 # STATISTIKA — to'liq raw SQL
 # ─────────────────────────────────────────────

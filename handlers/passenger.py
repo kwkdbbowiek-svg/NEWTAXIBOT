@@ -1,7 +1,5 @@
 """
 Yo'lovchi handlerlari.
-Faqat rol="passenger" yoki rol=None (yangi) foydalanuvchilarga ishlaydi.
-Admin va haydovchilar bu handlerlarga kirmaydi.
 """
 import asyncio
 import logging
@@ -19,15 +17,13 @@ from database.queries import (
     cancel_order,
     get_order,
     get_all_approved_driver_ids,
+    get_route_price,
 )
-from keyboards.common import (
-    role_select_keyboard,
-    cancel_keyboard,
-)
+from keyboards.common import cancel_keyboard
 from keyboards.passenger import (
     passenger_menu_keyboard,
     confirm_order_keyboard,
-    location_keyboard,
+    route_keyboard,
     passenger_count_keyboard,
 )
 from keyboards.driver import order_action_keyboard
@@ -36,8 +32,20 @@ from states.passenger_states import OrderCreation
 logger = logging.getLogger(__name__)
 router = Router()
 
+# Yo'nalish → settings key xaritasi
+ROUTE_KEYS = {
+    "🚌 Toshkent → Bekobod": "price_tashkent_bekobod",
+    "🚌 Bekobod → Toshkent": "price_bekobod_tashkent",
+}
 
-# ─── Admin ni bu routerdan chiqarib yuborish ───
+COUNT_BUTTONS = {
+    "1️⃣ 1 ta": 1,
+    "2️⃣ 2 ta": 2,
+    "3️⃣ 3 ta": 3,
+    "4️⃣ 4 ta": 4,
+}
+
+
 class NotAdmin(Filter):
     async def __call__(self, message: Message) -> bool:
         return message.from_user.id != ADMIN_ID
@@ -55,71 +63,42 @@ async def passenger_entry(message: Message, user_role: str | None) -> None:
     if user_role == "driver":
         await message.answer("❌ Siz haydovchi sifatida ro'yxatdansiz.")
         return
-
     async with AsyncSessionLocal() as session:
         await set_user_role(session, message.from_user.id, UserRole.PASSENGER)
-
-    await message.answer(
-        "🧍 Yo'lovchi menyusi:",
-        reply_markup=passenger_menu_keyboard(),
-    )
+    await message.answer("🧍 Yo'lovchi menyusi:", reply_markup=passenger_menu_keyboard())
 
 
 # ─────────────────────────────────────────────
-# BUYURTMA BERISH — faqat passenger uchun
+# BUYURTMA BERISH
 # ─────────────────────────────────────────────
 
 @router.message(F.text == "📦 Buyurtma berish")
 async def start_order(message: Message, state: FSMContext, user_role: str | None) -> None:
     if user_role != "passenger":
         return
-
     await message.answer(
-        "📍 <b>Qayerdan?</b>\nManzilni tanlang:",
-        reply_markup=location_keyboard(),
+        "🚌 <b>Yo'nalishni tanlang:</b>",
+        reply_markup=route_keyboard(),
         parse_mode="HTML",
     )
-    await state.set_state(OrderCreation.from_location)
+    await state.set_state(OrderCreation.route)
 
 
-@router.message(OrderCreation.from_location, F.text)
-async def order_from_location(message: Message, state: FSMContext) -> None:
+@router.message(OrderCreation.route, F.text)
+async def order_route(message: Message, state: FSMContext) -> None:
     if message.text == "❌ Bekor qilish":
         await state.clear()
         await message.answer("Bekor qilindi.", reply_markup=passenger_menu_keyboard())
         return
 
-    if message.text not in ("🏙 Shirin", "🏘 Bekobod"):
+    if message.text not in ROUTE_KEYS:
         await message.answer(
             "Iltimos, quyidagi tugmalardan birini tanlang! ⬇️",
-            reply_markup=location_keyboard(),
+            reply_markup=route_keyboard(),
         )
         return
 
-    await state.update_data(from_location=message.text.strip())
-    await message.answer(
-        "📍 <b>Qayerga?</b>\nManzilni tanlang:",
-        reply_markup=location_keyboard(),
-        parse_mode="HTML",
-    )
-    await state.set_state(OrderCreation.to_location)
-
-
-@router.message(OrderCreation.to_location, F.text)
-async def order_to_location(message: Message, state: FSMContext) -> None:
-    if message.text == "❌ Bekor qilish":
-        await state.clear()
-        await message.answer("Bekor qilindi.", reply_markup=passenger_menu_keyboard())
-        return
-
-    if message.text not in ("🏙 Shirin", "🏘 Bekobod"):
-        await message.answer(
-            "Iltimos, quyidagi tugmalardan birini tanlang! ⬇️",
-            reply_markup=location_keyboard(),
-        )
-        return
-
-    await state.update_data(to_location=message.text.strip())
+    await state.update_data(route=message.text.strip())
     await message.answer(
         "📱 Telefon raqamingizni kiriting:\n(Masalan: +998901234567)",
         reply_markup=cancel_keyboard(),
@@ -148,15 +127,6 @@ async def order_phone(message: Message, state: FSMContext) -> None:
     await state.set_state(OrderCreation.passenger_count)
 
 
-# Tugmalar → son xaritasi
-COUNT_BUTTONS = {
-    "1️⃣ 1 ta": 1,
-    "2️⃣ 2 ta": 2,
-    "3️⃣ 3 ta": 3,
-    "4️⃣ 4 ta": 4,
-}
-
-
 @router.message(OrderCreation.passenger_count, F.text)
 async def order_passenger_count(message: Message, state: FSMContext) -> None:
     if message.text == "❌ Bekor qilish":
@@ -164,7 +134,6 @@ async def order_passenger_count(message: Message, state: FSMContext) -> None:
         await message.answer("Bekor qilindi.", reply_markup=passenger_menu_keyboard())
         return
 
-    # Pochta tanlandi
     if message.text == "📮 Pochta":
         await state.update_data(passenger_count=0, is_cargo=True)
         await message.answer(
@@ -208,9 +177,21 @@ async def _finish_order(
     count: int,
     cargo: str | None,
 ) -> None:
-    """Buyurtmani bazaga yozib tasdiqlash xabarini yuboradi."""
     data = await state.get_data()
     await state.clear()
+
+    route = data["route"]           # "🚌 Toshkent → Bekobod"
+    phone = data["phone"]
+    route_key = ROUTE_KEYS[route]   # "price_tashkent_bekobod"
+
+    # Yo'lkira narxini bazadan olish
+    async with AsyncSessionLocal() as session:
+        price = await get_route_price(session, route_key)
+
+    # Yo'nalishdan qayerdan/qayerga ajratamiz
+    parts = route.replace("🚌 ", "").split(" → ")
+    from_loc = parts[0].strip()
+    to_loc = parts[1].strip()
 
     if cargo:
         count_label = f"📮 Pochta: {cargo}"
@@ -219,23 +200,29 @@ async def _finish_order(
         count_label = f"👥 {count} kishi"
         passenger_count_db = count
 
+    # Yo'lkira qatori
+    if price > 0:
+        price_label = f"💵 Yo'lkira: <b>{price:,} so'm</b>"
+    else:
+        price_label = "💵 Yo'lkira: <b>Belgilanmagan</b>"
+
     async with AsyncSessionLocal() as session:
         order = await create_order(
             session=session,
             passenger_id=message.from_user.id,
-            from_location=data["from_location"],
-            to_location=data["to_location"],
-            passenger_phone=data["phone"],
+            from_location=from_loc,
+            to_location=to_loc,
+            passenger_phone=phone,
             passenger_count=passenger_count_db,
             cargo_description=cargo,
         )
 
     summary = (
         f"📋 <b>Buyurtma ma'lumotlari:</b>\n\n"
-        f"📍 Qayerdan: {data['from_location']}\n"
-        f"📍 Qayerga: {data['to_location']}\n"
-        f"📱 Telefon: {data['phone']}\n"
-        f"{count_label}\n\n"
+        f"🚌 Yo'nalish: {route.replace('🚌 ', '')}\n"
+        f"📱 Telefon: {phone}\n"
+        f"{count_label}\n"
+        f"{price_label}\n\n"
         f"Tasdiqlaysizmi?"
     )
     await message.answer(
@@ -268,34 +255,39 @@ async def confirm_order_callback(callback: CallbackQuery, bot: Bot) -> None:
         await callback.message.edit_text("❌ Buyurtma topilmadi.")
         return
 
-    await callback.message.edit_text(
-        "✅ Buyurtmangiz yuborildi! Haydovchi qidirilmoqda..."
-    )
-
-    # Broadcast background task sifatida — foydalanuvchi kutmasin
+    await callback.message.edit_text("✅ Buyurtmangiz yuborildi! Haydovchi qidirilmoqda...")
     asyncio.create_task(_broadcast_order(bot=bot, order=order))
 
 
 async def _broadcast_order(bot: Bot, order) -> None:
-    """
-    Buyurtmani tarqatish:
-    - ORDERS_CHANNEL_ID → admin hisobot
-    - Barcha tasdiqlangan haydovchilarga (Telegram rate limit: 30 msg/sek)
-    """
     if order.cargo_description:
         count_line = f"📮 Pochta: {order.cargo_description}"
     else:
         count_line = f"👥 {order.passenger_count} kishi"
 
-    # Admin hisobot kanaliga
+    # Yo'lkira narxini ham haydovchilarga ko'rsatamiz
+    route_label = f"{order.from_location} → {order.to_location}"
+    route_key_map = {
+        "Toshkent → Bekobod": "price_tashkent_bekobod",
+        "Bekobod → Toshkent": "price_bekobod_tashkent",
+    }
+    price_line = ""
+    for route_text, rkey in route_key_map.items():
+        if order.from_location in route_text and order.to_location in route_text:
+            async with AsyncSessionLocal() as session:
+                price = await get_route_price(session, rkey)
+            if price > 0:
+                price_line = f"\n💵 Yo'lkira: {price:,} so'm"
+            break
+
+    # Admin kanaliga
     try:
         await bot.send_message(
             chat_id=ORDERS_CHANNEL_ID,
             text=(
                 f"🆕 <b>YANGI BUYURTMA #{order.id}</b>\n\n"
-                f"📍 Qayerdan: {order.from_location}\n"
-                f"📍 Qayerga: {order.to_location}\n"
-                f"{count_line}\n"
+                f"🚌 {route_label}\n"
+                f"{count_line}{price_line}\n"
                 f"📱 Telefon: <code>{order.passenger_phone}</code>\n"
                 f"🆔 Yo'lovchi ID: <code>{order.passenger_id}</code>"
             ),
@@ -304,15 +296,14 @@ async def _broadcast_order(bot: Bot, order) -> None:
     except Exception as e:
         logger.error(f"Admin kanaliga yuborishda xato: {e}")
 
-    # Haydovchilarga — faqat ID lar, xotira tejash
+    # Haydovchilarga
     async with AsyncSessionLocal() as session:
         driver_ids = await get_all_approved_driver_ids(session)
 
     driver_text = (
         f"🆕 <b>YANGI BUYURTMA #{order.id}</b>\n\n"
-        f"📍 Qayerdan: {order.from_location}\n"
-        f"📍 Qayerga: {order.to_location}\n"
-        f"{count_line}"
+        f"🚌 {route_label}\n"
+        f"{count_line}{price_line}"
     )
 
     sent = 0
@@ -330,13 +321,10 @@ async def _broadcast_order(bot: Bot, order) -> None:
             logger.warning(f"Haydovchi {driver_id}: {e}")
             failed += 1
 
-        # Telegram rate limit: 30 xabar/sek — har 25 ta dan keyin pause
         if (i + 1) % 25 == 0:
             await asyncio.sleep(1.0)
 
-    logger.info(
-        f"Buyurtma #{order.id} → {sent} haydovchiga yuborildi, {failed} xato."
-    )
+    logger.info(f"Buyurtma #{order.id} → {sent} haydovchiga yuborildi, {failed} xato.")
 
 
 # ─────────────────────────────────────────────

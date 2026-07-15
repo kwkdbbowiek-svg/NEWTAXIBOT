@@ -22,10 +22,12 @@ from database.queries import (
     get_statistics,
     get_all_users_ids,
     get_driver_by_user_id,
+    get_route_price,
+    set_route_price,
 )
-from keyboards.admin import admin_menu_keyboard, driver_approval_keyboard
+from keyboards.admin import admin_menu_keyboard, driver_approval_keyboard, price_route_keyboard
 from keyboards.common import cancel_keyboard
-from states.admin_states import AdminTopUp, AdminDeduct, AdminCommission, AdminBroadcast
+from states.admin_states import AdminTopUp, AdminDeduct, AdminCommission, AdminBroadcast, AdminPrice
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -301,6 +303,83 @@ async def admin_commission_set(message: Message, state: FSMContext) -> None:
 
     await message.answer(
         f"✅ Komissiya: <b>{value:,.0f} so'm</b> / yo'lovchi",
+        reply_markup=admin_menu_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+# ─────────────────────────────────────────────
+# YO'LKIRA NARXLARI
+# ─────────────────────────────────────────────
+
+@router.message(F.text == "🎫 Yo'lkira narxlari")
+async def admin_price_start(message: Message, state: FSMContext) -> None:
+    async with AsyncSessionLocal() as session:
+        p1 = await get_route_price(session, "price_tashkent_bekobod")
+        p2 = await get_route_price(session, "price_bekobod_tashkent")
+
+    await message.answer(
+        f"🎫 <b>Joriy yo'lkira narxlari:</b>\n\n"
+        f"🚌 Toshkent → Bekobod: <b>{p1:,} so'm</b>\n"
+        f"🚌 Bekobod → Toshkent: <b>{p2:,} so'm</b>\n\n"
+        f"Qaysi yo'nalish narxini o'zgartirmoqchisiz?",
+        reply_markup=price_route_keyboard(),
+        parse_mode="HTML",
+    )
+    await state.set_state(AdminPrice.route)
+
+
+@router.message(AdminPrice.route, F.text)
+async def admin_price_route(message: Message, state: FSMContext) -> None:
+    if message.text == "❌ Bekor qilish":
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=admin_menu_keyboard())
+        return
+
+    route_map = {
+        "🚌 Toshkent → Bekobod narxi": "price_tashkent_bekobod",
+        "🚌 Bekobod → Toshkent narxi": "price_bekobod_tashkent",
+    }
+    if message.text not in route_map:
+        await message.answer(
+            "Iltimos, quyidagi tugmalardan birini tanlang! ⬇️",
+            reply_markup=price_route_keyboard(),
+        )
+        return
+
+    await state.update_data(route_key=route_map[message.text], route_name=message.text.replace(" narxi", ""))
+    await message.answer(
+        f"💵 <b>{message.text.replace(' narxi', '')}</b> uchun yangi narxni kiriting (so'mda):",
+        reply_markup=cancel_keyboard(),
+        parse_mode="HTML",
+    )
+    await state.set_state(AdminPrice.price)
+
+
+@router.message(AdminPrice.price, F.text)
+async def admin_price_set(message: Message, state: FSMContext) -> None:
+    if message.text == "❌ Bekor qilish":
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=admin_menu_keyboard())
+        return
+
+    try:
+        price = int(float(message.text.replace(",", "").replace(" ", "")))
+        if price < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❗ To'g'ri narx kiriting (masalan: 50000)!")
+        return
+
+    data = await state.get_data()
+    await state.clear()
+
+    async with AsyncSessionLocal() as session:
+        await set_route_price(session, data["route_key"], price)
+
+    await message.answer(
+        f"✅ <b>{data['route_name']}</b>\n"
+        f"💵 Yangi narx: <b>{price:,} so'm</b>",
         reply_markup=admin_menu_keyboard(),
         parse_mode="HTML",
     )

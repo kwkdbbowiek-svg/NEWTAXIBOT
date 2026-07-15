@@ -17,3 +17,8 @@ class AdminCommission(StatesGroup):
 
 class AdminBroadcast(StatesGroup):
     message = State()
+
+
+class AdminPrice(StatesGroup):
+    route = State()    # qaysi yo'nalish narxi o'zgartiriladi
+    price = State()    # yangi narx
