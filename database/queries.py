@@ -122,13 +122,19 @@ async def reject_driver(session: AsyncSession, user_id: int) -> None:
 async def get_all_approved_driver_ids(session: AsyncSession) -> list[int]:
     """Faqat tasdiqlangan haydovchilarning user_id larini qaytaradi."""
     from sqlalchemy import cast, String
+    # Barcha haydovchilarni olib, Python tomonida filtrlash
+    # Bu usul bazadagi status formati qanday bo'lishidan qat'iy nazar ishlaydi
     result = await session.execute(
-        select(Driver.user_id).where(
-            cast(Driver.status, String) == "approved",
-            Driver.is_active == True,
-        )
+        select(Driver.user_id, Driver.status).where(Driver.is_active == True)
     )
-    return list(result.scalars().all())
+    rows = result.all()
+    approved_ids = []
+    for user_id, status in rows:
+        status_str = str(status).lower()
+        if "approved" in status_str:
+            approved_ids.append(user_id)
+    logger.info(f"Approved driver IDs: {approved_ids} (jami {len(rows)} haydovchi)")
+    return approved_ids
 
 
 async def top_up_balance(session: AsyncSession, user_id: int, amount: float) -> Driver | None:
