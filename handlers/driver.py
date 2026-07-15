@@ -357,6 +357,7 @@ async def take_order(callback: CallbackQuery, bot: Bot) -> None:
                 f"📍 {order.from_location} → {order.to_location}\n"
                 f"👥 {order.passenger_count} kishi\n"
                 f"🚕 {driver.full_name} | {driver.car_number}\n"
+                f"🆔 Haydovchi ID: <code>{driver.user_id}</code>\n"
                 f"💸 Komissiya: {total_commission:,.0f} so'm"
             ),
             parse_mode="HTML",
