@@ -326,15 +326,23 @@ async def take_order(callback: CallbackQuery, bot: Bot) -> None:
 
     # Yo'lovchiga haydovchi ma'lumotlari
     try:
+        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+        from aiogram.utils.keyboard import ReplyKeyboardBuilder
+        back_kb = ReplyKeyboardBuilder()
+        back_kb.row(KeyboardButton(text="📦 Buyurtma berish"))
+        back_kb.row(KeyboardButton(text="🔙 Bosh menyu"))
+
         await bot.send_message(
             chat_id=order.passenger_id,
             text=(
                 f"🚕 <b>Haydovchi topildi!</b>\n\n"
                 f"👤 Ism: {driver.full_name}\n"
                 f"📱 Telefon: <code>{driver.phone}</code>\n"
+                f"🆔 Telegram ID: <code>{driver.user_id}</code>\n"
                 f"🚗 {driver.car_model} | 🔢 {driver.car_number}\n\n"
                 f"Oq yo'l! 🤍"
             ),
+            reply_markup=back_kb.as_markup(resize_keyboard=True),
             parse_mode="HTML",
         )
     except Exception as e:
