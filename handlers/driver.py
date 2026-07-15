@@ -333,7 +333,7 @@ async def take_order(callback: CallbackQuery, bot: Bot) -> None:
                 f"👤 Ism: {driver.full_name}\n"
                 f"📱 Telefon: <code>{driver.phone}</code>\n"
                 f"🚗 {driver.car_model} | 🔢 {driver.car_number}\n\n"
-                f"Yaxshi sayohat! 🙂"
+                f"Oq yo'l! 🤍"
             ),
             parse_mode="HTML",
         )
