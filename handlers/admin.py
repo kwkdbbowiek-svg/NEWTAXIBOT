@@ -316,10 +316,19 @@ async def admin_statistics(message: Message) -> None:
         stats = await get_statistics(session)
 
     await message.answer(
-        f"📊 <b>Statistika:</b>\n\n"
-        f"👥 Jami foydalanuvchilar: <b>{stats['total_users']}</b>\n"
-        f"🚕 Tasdiqlangan haydovchilar: <b>{stats['total_drivers']}</b>\n"
-        f"📦 Bajarilgan zakazlar: <b>{stats['total_orders']}</b>",
+        f"📊 <b>Real Statistika</b>\n"
+        f"{'─' * 28}\n\n"
+        f"👤 <b>Foydalanuvchilar</b>\n"
+        f"  ├ Jami: <b>{stats['total_users']}</b>\n"
+        f"  ├ Yo'lovchilar: <b>{stats['total_passengers']}</b>\n"
+        f"  └ Haydovchilar (tasdiqlangan): <b>{stats['total_drivers_approved']}</b>\n\n"
+        f"⏳ <b>Kutayotgan haydovchilar:</b> <b>{stats['total_drivers_pending']}</b>\n\n"
+        f"📦 <b>Zakazlar</b>\n"
+        f"  ├ Bugun bajarilgan: <b>{stats['total_orders_today']}</b>\n"
+        f"  ├ Jami bajarilgan: <b>{stats['total_orders_done']}</b>\n"
+        f"  ├ Aktiv (kutayotgan): <b>{stats['total_orders_pending']}</b>\n"
+        f"  └ Bekor qilingan: <b>{stats['total_orders_cancelled']}</b>\n\n"
+        f"💰 <b>Jami komissiya:</b> <b>{stats['total_commission']:,} so'm</b>",
         reply_markup=admin_menu_keyboard(),
         parse_mode="HTML",
     )

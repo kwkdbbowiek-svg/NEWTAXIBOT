@@ -307,15 +307,67 @@ async def get_commission(session: AsyncSession) -> float:
 # ─────────────────────────────────────────────
 
 async def get_statistics(session: AsyncSession) -> dict:
-    total_users = await session.scalar(select(func.count()).select_from(User))
-    total_drivers = await session.scalar(
+    from datetime import datetime, date
+
+    # Jami foydalanuvchilar
+    total_users = await session.scalar(
+        select(func.count()).select_from(User)
+    ) or 0
+
+    # Yo'lovchilar
+    total_passengers = await session.scalar(
+        select(func.count()).select_from(User).where(User.role == UserRole.PASSENGER)
+    ) or 0
+
+    # Tasdiqlangan haydovchilar
+    total_drivers_approved = await session.scalar(
         select(func.count()).select_from(Driver).where(Driver.status == DriverStatus.APPROVED)
-    )
-    total_orders = await session.scalar(
+    ) or 0
+
+    # Kutayotgan (tasdiqlash kerak) haydovchilar
+    total_drivers_pending = await session.scalar(
+        select(func.count()).select_from(Driver).where(Driver.status == DriverStatus.PENDING)
+    ) or 0
+
+    # Jami bajarilgan zakazlar
+    total_orders_done = await session.scalar(
         select(func.count()).select_from(Order).where(Order.status == OrderStatus.CLAIMED)
-    )
+    ) or 0
+
+    # Aktiv (kutayotgan) zakazlar
+    total_orders_pending = await session.scalar(
+        select(func.count()).select_from(Order).where(Order.status == OrderStatus.PENDING)
+    ) or 0
+
+    # Bekor qilingan zakazlar
+    total_orders_cancelled = await session.scalar(
+        select(func.count()).select_from(Order).where(Order.status == OrderStatus.CANCELLED)
+    ) or 0
+
+    # Bugungi zakazlar (CLAIMED)
+    today_start = datetime.combine(date.today(), datetime.min.time())
+    total_orders_today = await session.scalar(
+        select(func.count()).select_from(Order).where(
+            Order.status == OrderStatus.CLAIMED,
+            Order.updated_at >= today_start,
+        )
+    ) or 0
+
+    # Jami yig'ilgan komissiya (so'mda)
+    total_commission = await session.scalar(
+        select(func.coalesce(func.sum(Order.commission_charged), 0)).select_from(Order).where(
+            Order.status == OrderStatus.CLAIMED
+        )
+    ) or 0
+
     return {
-        "total_users": total_users or 0,
-        "total_drivers": total_drivers or 0,
-        "total_orders": total_orders or 0,
+        "total_users": total_users,
+        "total_passengers": total_passengers,
+        "total_drivers_approved": total_drivers_approved,
+        "total_drivers_pending": total_drivers_pending,
+        "total_orders_done": total_orders_done,
+        "total_orders_pending": total_orders_pending,
+        "total_orders_cancelled": total_orders_cancelled,
+        "total_orders_today": total_orders_today,
+        "total_commission": int(total_commission),
     }
