@@ -12,14 +12,6 @@ def role_select_keyboard() -> ReplyKeyboardMarkup:
     return builder.as_markup(resize_keyboard=True)
 
 
-def share_contact_keyboard(text: str = "📱 Raqamni ulashish") -> ReplyKeyboardMarkup:
-    builder = ReplyKeyboardBuilder()
-    builder.add(KeyboardButton(text=text, request_contact=True))
-    builder.add(KeyboardButton(text="❌ Bekor qilish"))
-    builder.adjust(1)
-    return builder.as_markup(resize_keyboard=True, one_time_keyboard=True)
-
-
 def confirm_keyboard() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.row(

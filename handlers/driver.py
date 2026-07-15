@@ -23,9 +23,8 @@ from database.queries import (
 )
 from keyboards.common import (
     role_select_keyboard,
-    share_contact_keyboard,
-    confirm_keyboard,
     cancel_keyboard,
+    confirm_keyboard,
 )
 from keyboards.admin import driver_approval_keyboard
 from keyboards.driver import driver_menu_keyboard, order_action_keyboard

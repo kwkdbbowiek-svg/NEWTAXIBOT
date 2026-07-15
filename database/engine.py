@@ -1,4 +1,4 @@
-from sqlalchemy import text
+from sqlalchemy import text, event
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from config import DATABASE_URL
 from database.models import Base
@@ -15,9 +15,12 @@ else:
     engine = create_async_engine(
         DATABASE_URL,
         echo=False,
-        pool_size=10,
-        max_overflow=20,
-        pool_pre_ping=True,
+        # 10 000 foydalanuvchi uchun yetarli pool
+        pool_size=20,
+        max_overflow=40,
+        pool_pre_ping=True,           # o'lik konneksiyalarni avtomatik tekshiradi
+        pool_recycle=1800,            # 30 daqiqada konneksiyani yangilaydi
+        pool_timeout=30,              # konneksiya olishga 30 sek kutadi
     )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -38,7 +41,7 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
         if not _is_sqlite:
-            # PostgreSQL: eski baza bilan muvofiqlik uchun migration
+            # PostgreSQL: eski baza bilan muvofiqlik uchun safe migration
             migrations = [
                 # users.role
                 """
@@ -62,7 +65,7 @@ async def init_db() -> None:
                     END IF;
                 END $$;
                 """,
-                # users.last_active — eski bazada NOT NULL constraint bor
+                # users.last_active
                 """
                 DO $$ BEGIN
                     IF NOT EXISTS (

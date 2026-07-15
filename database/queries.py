@@ -6,12 +6,18 @@ PostgreSQL (prod): FOR UPDATE (Pessimistic Lock) to'liq ishlaydi.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from sqlalchemy import select, update, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config import DATABASE_URL
 from database.models import User, Driver, Order, Settings, UserRole, DriverStatus, OrderStatus
+
+logger = logging.getLogger(__name__)
 
 _USE_FOR_UPDATE = not DATABASE_URL.startswith("sqlite")
 _IS_SQLITE = DATABASE_URL.startswith("sqlite")
@@ -26,14 +32,26 @@ async def get_or_create_user(
     username: str | None,
     full_name: str,
 ) -> User:
+    """
+    Foydalanuvchini oladi yoki yaratadi.
+    Race condition (parallel /start) uchun IntegrityError ushlaydi.
+    """
     result = await session.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-    if not user:
+    if user:
+        return user
+
+    try:
         user = User(id=user_id, username=username, full_name=full_name)
         session.add(user)
         await session.commit()
         await session.refresh(user)
-    return user
+        return user
+    except IntegrityError:
+        # Parallel so'rov allaqachon yaratib qo'ygan — qayta o'qiymiz
+        await session.rollback()
+        result = await session.execute(select(User).where(User.id == user_id))
+        return result.scalar_one()
 
 
 async def get_user(session: AsyncSession, user_id: int) -> User | None:
@@ -46,8 +64,9 @@ async def set_user_role(session: AsyncSession, user_id: int, role: UserRole) -> 
     await session.commit()
 
 
-async def get_all_users(session: AsyncSession) -> list[User]:
-    result = await session.execute(select(User))
+async def get_all_users_ids(session: AsyncSession) -> list[int]:
+    """Faqat ID larni qaytaradi — katta bazada xotira tejaladi."""
+    result = await session.execute(select(User.id))
     return list(result.scalars().all())
 
 
@@ -97,9 +116,10 @@ async def reject_driver(session: AsyncSession, user_id: int) -> None:
     await session.commit()
 
 
-async def get_all_approved_drivers(session: AsyncSession) -> list[Driver]:
+async def get_all_approved_driver_ids(session: AsyncSession) -> list[int]:
+    """Faqat tasdiqlangan haydovchilarning user_id larini qaytaradi."""
     result = await session.execute(
-        select(Driver).where(
+        select(Driver.user_id).where(
             Driver.status == DriverStatus.APPROVED,
             Driver.is_active == True,
         )
@@ -168,47 +188,52 @@ async def claim_order_atomic(
     XAVFSIZ ATOMIC TRANZAKSIYA.
     O'zi yangi session ochadi — tashqaridan session uzatilmaydi.
 
-    PostgreSQL: SELECT ... FOR UPDATE (pessimistic lock)
-    SQLite:     lock yo'q, lekin aiosqlite serialized — test uchun yetarli.
+    PostgreSQL: SELECT ... FOR UPDATE (pessimistic lock) — 10 000 haydovchi
+                bir vaqtda bosganida ham faqat bittasi buyurtmani oladi.
+    SQLite:     lock yo'q, aiosqlite serialized — test uchun yetarli.
 
     Qaytaradi: (muvaffaqiyat: bool, sabab: str)
     """
-    # Import bu yerda — circular import oldini olish uchun
     from database.engine import AsyncSessionLocal
 
     async with AsyncSessionLocal() as session:
-        async with session.begin():
-            # 1. Buyurtmani qulflash
-            order_q = select(Order).where(Order.id == order_id)
-            if _USE_FOR_UPDATE:
-                order_q = order_q.with_for_update()
-            order = (await session.execute(order_q)).scalar_one_or_none()
+        try:
+            async with session.begin():
+                # 1. Buyurtmani qulflash
+                order_q = select(Order).where(Order.id == order_id)
+                if _USE_FOR_UPDATE:
+                    order_q = order_q.with_for_update(nowait=False)
+                order = (await session.execute(order_q)).scalar_one_or_none()
 
-            if not order:
-                return False, "order_not_found"
-            if order.status != OrderStatus.PENDING:
-                return False, "already_claimed"
+                if not order:
+                    return False, "order_not_found"
+                if order.status != OrderStatus.PENDING:
+                    return False, "already_claimed"
 
-            # 2. Haydovchini qulflash
-            driver_q = select(Driver).where(Driver.user_id == driver_user_id)
-            if _USE_FOR_UPDATE:
-                driver_q = driver_q.with_for_update()
-            driver = (await session.execute(driver_q)).scalar_one_or_none()
+                # 2. Haydovchini qulflash
+                driver_q = select(Driver).where(Driver.user_id == driver_user_id)
+                if _USE_FOR_UPDATE:
+                    driver_q = driver_q.with_for_update(nowait=False)
+                driver = (await session.execute(driver_q)).scalar_one_or_none()
 
-            if not driver:
-                return False, "driver_not_found"
-            if driver.status != DriverStatus.APPROVED:
-                return False, "driver_not_approved"
-            if driver.balance < commission:
-                return False, "insufficient_balance"
+                if not driver:
+                    return False, "driver_not_found"
+                if driver.status != DriverStatus.APPROVED:
+                    return False, "driver_not_approved"
+                if driver.balance < commission:
+                    return False, "insufficient_balance"
 
-            # 3. Atomic o'zgarishlar
-            driver.balance = round(driver.balance - commission)
-            order.status = OrderStatus.CLAIMED
-            order.driver_id = driver_user_id
-            order.commission_charged = commission
+                # 3. Atomic o'zgarishlar
+                driver.balance = round(driver.balance - commission)
+                order.status = OrderStatus.CLAIMED
+                order.driver_id = driver_user_id
+                order.commission_charged = commission
 
-            return True, "success"
+                return True, "success"
+
+        except Exception as e:
+            logger.error(f"claim_order_atomic xatosi: {e}")
+            return False, "error"
 
 
 async def cancel_order(
@@ -216,25 +241,31 @@ async def cancel_order(
     order_id: int,
     passenger_id: int,
 ) -> tuple[bool, str]:
-    order_q = select(Order).where(
-        Order.id == order_id,
-        Order.passenger_id == passenger_id,
-    )
-    if _USE_FOR_UPDATE:
-        order_q = order_q.with_for_update()
+    """Buyurtmani bekor qilish — tranzaksiya ichida."""
+    try:
+        async with session.begin():
+            order_q = select(Order).where(
+                Order.id == order_id,
+                Order.passenger_id == passenger_id,
+            )
+            if _USE_FOR_UPDATE:
+                order_q = order_q.with_for_update(nowait=False)
 
-    order = (await session.execute(order_q)).scalar_one_or_none()
+            order = (await session.execute(order_q)).scalar_one_or_none()
 
-    if not order:
-        return False, "not_found"
-    if order.status == OrderStatus.CLAIMED:
-        return False, "already_claimed"
-    if order.status == OrderStatus.CANCELLED:
-        return False, "already_cancelled"
+            if not order:
+                return False, "not_found"
+            if order.status == OrderStatus.CLAIMED:
+                return False, "already_claimed"
+            if order.status == OrderStatus.CANCELLED:
+                return False, "already_cancelled"
 
-    order.status = OrderStatus.CANCELLED
-    await session.commit()
-    return True, "success"
+            order.status = OrderStatus.CANCELLED
+            return True, "success"
+
+    except Exception as e:
+        logger.error(f"cancel_order xatosi: {e}")
+        return False, "error"
 
 
 # ─────────────────────────────────────────────
@@ -267,7 +298,7 @@ async def set_setting(session: AsyncSession, key: str, value: str) -> None:
 
 
 async def get_commission(session: AsyncSession) -> float:
-    value = await get_setting(session, "commission_per_passenger", "1.0")
+    value = await get_setting(session, "commission_per_passenger", "1000")
     return float(value)
 
 

@@ -3,6 +3,7 @@ Yo'lovchi handlerlari.
 Faqat rol="passenger" yoki rol=None (yangi) foydalanuvchilarga ishlaydi.
 Admin va haydovchilar bu handlerlarga kirmaydi.
 """
+import asyncio
 import logging
 from aiogram import Router, F, Bot
 from aiogram.filters import Filter
@@ -17,14 +18,18 @@ from database.queries import (
     create_order,
     cancel_order,
     get_order,
-    get_all_approved_drivers,
+    get_all_approved_driver_ids,
 )
 from keyboards.common import (
     role_select_keyboard,
-    share_contact_keyboard,
     cancel_keyboard,
 )
-from keyboards.passenger import passenger_menu_keyboard, confirm_order_keyboard, location_keyboard, passenger_count_keyboard
+from keyboards.passenger import (
+    passenger_menu_keyboard,
+    confirm_order_keyboard,
+    location_keyboard,
+    passenger_count_keyboard,
+)
 from keyboards.driver import order_action_keyboard
 from states.passenger_states import OrderCreation
 
@@ -47,7 +52,6 @@ router.message.filter(NotAdmin())
 
 @router.message(F.text == "🧍 Yo'lovchi")
 async def passenger_entry(message: Message, user_role: str | None) -> None:
-    # Haydovchi yo'lovchi bo'la olmaydi
     if user_role == "driver":
         await message.answer("❌ Siz haydovchi sifatida ro'yxatdansiz.")
         return
@@ -68,7 +72,7 @@ async def passenger_entry(message: Message, user_role: str | None) -> None:
 @router.message(F.text == "📦 Buyurtma berish")
 async def start_order(message: Message, state: FSMContext, user_role: str | None) -> None:
     if user_role != "passenger":
-        return  # Haydovchi yoki boshqalar uchun javob yo'q
+        return
 
     await message.answer(
         "📍 <b>Qayerdan?</b>\nManzilni tanlang:",
@@ -86,8 +90,10 @@ async def order_from_location(message: Message, state: FSMContext) -> None:
         return
 
     if message.text not in ("🏙 Shirin", "🏘 Bekobod"):
-        await message.answer("Iltimos, quyidagi tugmalardan birini tanlang! ⬇️",
-                             reply_markup=location_keyboard())
+        await message.answer(
+            "Iltimos, quyidagi tugmalardan birini tanlang! ⬇️",
+            reply_markup=location_keyboard(),
+        )
         return
 
     await state.update_data(from_location=message.text.strip())
@@ -107,8 +113,10 @@ async def order_to_location(message: Message, state: FSMContext) -> None:
         return
 
     if message.text not in ("🏙 Shirin", "🏘 Bekobod"):
-        await message.answer("Iltimos, quyidagi tugmalardan birini tanlang! ⬇️",
-                             reply_markup=location_keyboard())
+        await message.answer(
+            "Iltimos, quyidagi tugmalardan birini tanlang! ⬇️",
+            reply_markup=location_keyboard(),
+        )
         return
 
     await state.update_data(to_location=message.text.strip())
@@ -120,7 +128,7 @@ async def order_to_location(message: Message, state: FSMContext) -> None:
 
 
 @router.message(OrderCreation.phone, F.text)
-async def order_phone_contact(message: Message, state: FSMContext) -> None:
+async def order_phone(message: Message, state: FSMContext) -> None:
     if message.text == "❌ Bekor qilish":
         await state.clear()
         await message.answer("Bekor qilindi.", reply_markup=passenger_menu_keyboard())
@@ -140,7 +148,7 @@ async def order_phone_contact(message: Message, state: FSMContext) -> None:
     await state.set_state(OrderCreation.passenger_count)
 
 
-# Belgilangan tugmalar ro'yxati
+# Tugmalar → son xaritasi
 COUNT_BUTTONS = {
     "1️⃣ 1 ta": 1,
     "2️⃣ 2 ta": 2,
@@ -156,18 +164,18 @@ async def order_passenger_count(message: Message, state: FSMContext) -> None:
         await message.answer("Bekor qilindi.", reply_markup=passenger_menu_keyboard())
         return
 
-    # Pochta tanlandi — tavsif so'raymiz
+    # Pochta tanlandi
     if message.text == "📮 Pochta":
         await state.update_data(passenger_count=0, is_cargo=True)
         await message.answer(
-            "📮 <b>Pochtaning tavsifini yozing:</b>\n(Nima yuboriladi, og'irligi, o'lchami va h.k.)",
+            "📮 <b>Pochtaning tavsifini yozing:</b>\n"
+            "(Nima yuboriladi, og'irligi, o'lchami va h.k.)",
             reply_markup=cancel_keyboard(),
             parse_mode="HTML",
         )
         await state.set_state(OrderCreation.cargo_description)
         return
 
-    # Oddiy yo'lovchi soni
     if message.text not in COUNT_BUTTONS:
         await message.answer(
             "Iltimos, quyidagi tugmalardan birini tanlang! ⬇️",
@@ -187,15 +195,23 @@ async def order_cargo_description(message: Message, state: FSMContext) -> None:
         return
 
     cargo = message.text.strip()
+    if not cargo:
+        await message.answer("❗ Tavsif bo'sh bo'lmasin, iltimos qayta yozing.")
+        return
+
     await _finish_order(message, state, count=0, cargo=cargo)
 
 
-async def _finish_order(message: Message, state: FSMContext, count: int, cargo: str | None) -> None:
-    """Buyurtmani bazaga yozib, tasdiqlash xabarini yuboradi."""
+async def _finish_order(
+    message: Message,
+    state: FSMContext,
+    count: int,
+    cargo: str | None,
+) -> None:
+    """Buyurtmani bazaga yozib tasdiqlash xabarini yuboradi."""
     data = await state.get_data()
     await state.clear()
 
-    # Buyurtma matnini tuzamiz
     if cargo:
         count_label = f"📮 Pochta: {cargo}"
         passenger_count_db = 0
@@ -252,18 +268,20 @@ async def confirm_order_callback(callback: CallbackQuery, bot: Bot) -> None:
         await callback.message.edit_text("❌ Buyurtma topilmadi.")
         return
 
-    await callback.message.edit_text("✅ Buyurtmangiz yuborildi! Haydovchi qidirilmoqda...")
+    await callback.message.edit_text(
+        "✅ Buyurtmangiz yuborildi! Haydovchi qidirilmoqda..."
+    )
 
-    await _broadcast_order(bot=bot, order=order)
+    # Broadcast background task sifatida — foydalanuvchi kutmasin
+    asyncio.create_task(_broadcast_order(bot=bot, order=order))
 
 
 async def _broadcast_order(bot: Bot, order) -> None:
     """
     Buyurtmani tarqatish:
-    - ORDERS_CHANNEL_ID → admin hisobot (to'liq ma'lumot)
-    - Barcha tasdiqlangan haydovchilarga SHAXSAN (kontakt yashirin)
+    - ORDERS_CHANNEL_ID → admin hisobot
+    - Barcha tasdiqlangan haydovchilarga (Telegram rate limit: 30 msg/sek)
     """
-    # Yo'lovchi/pochta satri
     if order.cargo_description:
         count_line = f"📮 Pochta: {order.cargo_description}"
     else:
@@ -284,9 +302,12 @@ async def _broadcast_order(bot: Bot, order) -> None:
             parse_mode="HTML",
         )
     except Exception as e:
-        logger.error(f"Hisobot kanaliga yuborishda xato: {e}")
+        logger.error(f"Admin kanaliga yuborishda xato: {e}")
 
-    # Haydovchilarga shaxsan — kontakt ko'rsatilmaydi
+    # Haydovchilarga — faqat ID lar, xotira tejash
+    async with AsyncSessionLocal() as session:
+        driver_ids = await get_all_approved_driver_ids(session)
+
     driver_text = (
         f"🆕 <b>YANGI BUYURTMA #{order.id}</b>\n\n"
         f"📍 Qayerdan: {order.from_location}\n"
@@ -294,23 +315,28 @@ async def _broadcast_order(bot: Bot, order) -> None:
         f"{count_line}"
     )
 
-    async with AsyncSessionLocal() as session:
-        drivers = await get_all_approved_drivers(session)
-
     sent = 0
-    for driver in drivers:
+    failed = 0
+    for i, driver_id in enumerate(driver_ids):
         try:
             await bot.send_message(
-                chat_id=driver.user_id,
+                chat_id=driver_id,
                 text=driver_text,
                 reply_markup=order_action_keyboard(order.id),
                 parse_mode="HTML",
             )
             sent += 1
         except Exception as e:
-            logger.warning(f"Haydovchi {driver.user_id}: {e}")
+            logger.warning(f"Haydovchi {driver_id}: {e}")
+            failed += 1
 
-    logger.info(f"Buyurtma #{order.id} → {sent} haydovchiga yuborildi.")
+        # Telegram rate limit: 30 xabar/sek — har 25 ta dan keyin pause
+        if (i + 1) % 25 == 0:
+            await asyncio.sleep(1.0)
+
+    logger.info(
+        f"Buyurtma #{order.id} → {sent} haydovchiga yuborildi, {failed} xato."
+    )
 
 
 # ─────────────────────────────────────────────

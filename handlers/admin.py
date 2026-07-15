@@ -20,7 +20,7 @@ from database.queries import (
     get_commission,
     set_setting,
     get_statistics,
-    get_all_users,
+    get_all_users_ids,
     get_driver_by_user_id,
 )
 from keyboards.admin import admin_menu_keyboard, driver_approval_keyboard
@@ -348,21 +348,25 @@ async def admin_broadcast_send(message: Message, state: FSMContext, bot: Bot) ->
     await state.clear()
 
     async with AsyncSessionLocal() as session:
-        users = await get_all_users(session)
+        user_ids = await get_all_users_ids(session)
 
-    await message.answer(f"⏳ Yuborilmoqda... ({len(users)} ta foydalanuvchi)")
+    # Admin o'zini o'zi chiqarib tashlaydi
+    user_ids = [uid for uid in user_ids if uid != ADMIN_ID]
+
+    await message.answer(f"⏳ Yuborilmoqda... ({len(user_ids)} ta foydalanuvchi)")
 
     ok, fail = 0, 0
-    for user in users:
-        if user.id == ADMIN_ID:
-            continue
+    for i, user_id in enumerate(user_ids):
         try:
-            await _send_broadcast(bot, message, user.id)
+            await _send_broadcast(bot, message, user_id)
             ok += 1
-            await asyncio.sleep(0.05)
         except Exception as e:
-            logger.warning(f"User {user.id}: {e}")
+            logger.warning(f"User {user_id}: {e}")
             fail += 1
+
+        # Telegram rate limit: 30 msg/sek — har 25 tadan keyin 1 sek pause
+        if (i + 1) % 25 == 0:
+            await asyncio.sleep(1.0)
 
     await message.answer(
         f"✅ <b>Reklama yuborildi!</b>\n\n✔️ {ok} | ❌ {fail}",
