@@ -77,6 +77,7 @@ class Order(Base):
     to_location: Mapped[str] = mapped_column(String(256))
     passenger_phone: Mapped[str] = mapped_column(String(20))
     passenger_count: Mapped[int] = mapped_column(Integer)
+    cargo_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.PENDING)
     commission_charged: Mapped[float] = mapped_column(Float, default=0.0)
     channel_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

@@ -138,6 +138,7 @@ async def create_order(
     to_location: str,
     passenger_phone: str,
     passenger_count: int,
+    cargo_description: str | None = None,
 ) -> Order:
     order = Order(
         passenger_id=passenger_id,
@@ -145,6 +146,7 @@ async def create_order(
         to_location=to_location,
         passenger_phone=passenger_phone,
         passenger_count=passenger_count,
+        cargo_description=cargo_description,
     )
     session.add(order)
     await session.commit()

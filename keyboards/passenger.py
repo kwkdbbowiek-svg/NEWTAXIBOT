@@ -20,6 +20,20 @@ def location_keyboard() -> ReplyKeyboardMarkup:
     return builder.as_markup(resize_keyboard=True)
 
 
+def passenger_count_keyboard() -> ReplyKeyboardMarkup:
+    """Yo'lovchilar soni yoki pochta tanlash."""
+    builder = ReplyKeyboardBuilder()
+    builder.row(
+        KeyboardButton(text="1️⃣ 1 ta"),
+        KeyboardButton(text="2️⃣ 2 ta"),
+        KeyboardButton(text="3️⃣ 3 ta"),
+        KeyboardButton(text="4️⃣ 4 ta"),
+    )
+    builder.row(KeyboardButton(text="📮 Pochta"))
+    builder.row(KeyboardButton(text="❌ Bekor qilish"))
+    return builder.as_markup(resize_keyboard=True)
+
+
 def confirm_order_keyboard(order_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(

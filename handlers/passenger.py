@@ -24,7 +24,7 @@ from keyboards.common import (
     share_contact_keyboard,
     cancel_keyboard,
 )
-from keyboards.passenger import passenger_menu_keyboard, confirm_order_keyboard, location_keyboard
+from keyboards.passenger import passenger_menu_keyboard, confirm_order_keyboard, location_keyboard, passenger_count_keyboard
 from keyboards.driver import order_action_keyboard
 from states.passenger_states import OrderCreation
 
@@ -133,11 +133,20 @@ async def order_phone_contact(message: Message, state: FSMContext) -> None:
 
     await state.update_data(phone=phone)
     await message.answer(
-        "👥 <b>Necha kishi ketasiz?</b>\nRaqam kiriting:",
-        reply_markup=cancel_keyboard(),
+        "👥 <b>Necha kishi yoki pochta?</b>\nTanlang:",
+        reply_markup=passenger_count_keyboard(),
         parse_mode="HTML",
     )
     await state.set_state(OrderCreation.passenger_count)
+
+
+# Belgilangan tugmalar ro'yxati
+COUNT_BUTTONS = {
+    "1️⃣ 1 ta": 1,
+    "2️⃣ 2 ta": 2,
+    "3️⃣ 3 ta": 3,
+    "4️⃣ 4 ta": 4,
+}
 
 
 @router.message(OrderCreation.passenger_count, F.text)
@@ -147,13 +156,52 @@ async def order_passenger_count(message: Message, state: FSMContext) -> None:
         await message.answer("Bekor qilindi.", reply_markup=passenger_menu_keyboard())
         return
 
-    if not message.text.isdigit() or int(message.text) < 1:
-        await message.answer("❗ To'g'ri raqam kiriting (masalan: 1, 2, 3).")
+    # Pochta tanlandi — tavsif so'raymiz
+    if message.text == "📮 Pochta":
+        await state.update_data(passenger_count=0, is_cargo=True)
+        await message.answer(
+            "📮 <b>Pochtaning tavsifini yozing:</b>\n(Nima yuboriladi, og'irligi, o'lchami va h.k.)",
+            reply_markup=cancel_keyboard(),
+            parse_mode="HTML",
+        )
+        await state.set_state(OrderCreation.cargo_description)
         return
 
-    count = int(message.text)
+    # Oddiy yo'lovchi soni
+    if message.text not in COUNT_BUTTONS:
+        await message.answer(
+            "Iltimos, quyidagi tugmalardan birini tanlang! ⬇️",
+            reply_markup=passenger_count_keyboard(),
+        )
+        return
+
+    count = COUNT_BUTTONS[message.text]
+    await _finish_order(message, state, count=count, cargo=None)
+
+
+@router.message(OrderCreation.cargo_description, F.text)
+async def order_cargo_description(message: Message, state: FSMContext) -> None:
+    if message.text == "❌ Bekor qilish":
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=passenger_menu_keyboard())
+        return
+
+    cargo = message.text.strip()
+    await _finish_order(message, state, count=0, cargo=cargo)
+
+
+async def _finish_order(message: Message, state: FSMContext, count: int, cargo: str | None) -> None:
+    """Buyurtmani bazaga yozib, tasdiqlash xabarini yuboradi."""
     data = await state.get_data()
     await state.clear()
+
+    # Buyurtma matnini tuzamiz
+    if cargo:
+        count_label = f"📮 Pochta: {cargo}"
+        passenger_count_db = 0
+    else:
+        count_label = f"👥 {count} kishi"
+        passenger_count_db = count
 
     async with AsyncSessionLocal() as session:
         order = await create_order(
@@ -162,7 +210,8 @@ async def order_passenger_count(message: Message, state: FSMContext) -> None:
             from_location=data["from_location"],
             to_location=data["to_location"],
             passenger_phone=data["phone"],
-            passenger_count=count,
+            passenger_count=passenger_count_db,
+            cargo_description=cargo,
         )
 
     summary = (
@@ -170,7 +219,7 @@ async def order_passenger_count(message: Message, state: FSMContext) -> None:
         f"📍 Qayerdan: {data['from_location']}\n"
         f"📍 Qayerga: {data['to_location']}\n"
         f"📱 Telefon: {data['phone']}\n"
-        f"👥 Yo'lovchilar: {count} kishi\n\n"
+        f"{count_label}\n\n"
         f"Tasdiqlaysizmi?"
     )
     await message.answer(
@@ -214,6 +263,12 @@ async def _broadcast_order(bot: Bot, order) -> None:
     - ORDERS_CHANNEL_ID → admin hisobot (to'liq ma'lumot)
     - Barcha tasdiqlangan haydovchilarga SHAXSAN (kontakt yashirin)
     """
+    # Yo'lovchi/pochta satri
+    if order.cargo_description:
+        count_line = f"📮 Pochta: {order.cargo_description}"
+    else:
+        count_line = f"👥 {order.passenger_count} kishi"
+
     # Admin hisobot kanaliga
     try:
         await bot.send_message(
@@ -222,7 +277,7 @@ async def _broadcast_order(bot: Bot, order) -> None:
                 f"🆕 <b>YANGI BUYURTMA #{order.id}</b>\n\n"
                 f"📍 Qayerdan: {order.from_location}\n"
                 f"📍 Qayerga: {order.to_location}\n"
-                f"👥 {order.passenger_count} kishi\n"
+                f"{count_line}\n"
                 f"📱 Telefon: <code>{order.passenger_phone}</code>\n"
                 f"🆔 Yo'lovchi ID: <code>{order.passenger_id}</code>"
             ),
@@ -236,7 +291,7 @@ async def _broadcast_order(bot: Bot, order) -> None:
         f"🆕 <b>YANGI BUYURTMA #{order.id}</b>\n\n"
         f"📍 Qayerdan: {order.from_location}\n"
         f"📍 Qayerga: {order.to_location}\n"
-        f"👥 {order.passenger_count} kishi"
+        f"{count_line}"
     )
 
     async with AsyncSessionLocal() as session:

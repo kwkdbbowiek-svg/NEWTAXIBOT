@@ -308,11 +308,16 @@ async def take_order(callback: CallbackQuery, bot: Bot) -> None:
         passenger = await get_user(session, order.passenger_id)
 
     # G'olib haydovchiga — yo'lovchi kontakti ochiladi
+    if order.cargo_description:
+        count_line = f"📮 Pochta: {order.cargo_description}"
+    else:
+        count_line = f"👥 Yo'lovchilar: {order.passenger_count} kishi"
+
     await callback.message.answer(
         f"🎉 <b>Buyurtma olindi!</b>\n\n"
         f"📍 Qayerdan: {order.from_location}\n"
         f"📍 Qayerga: {order.to_location}\n"
-        f"👥 Yo'lovchilar: {order.passenger_count} kishi\n\n"
+        f"{count_line}\n\n"
         f"📱 Telefon: <code>{order.passenger_phone}</code>\n"
         f"👤 Username: @{passenger.username or 'yoq'}\n\n"
         f"💸 Yechildi: {total_commission:,.0f} so'm | 💰 Qoldi: {driver.balance:,.0f} so'm",

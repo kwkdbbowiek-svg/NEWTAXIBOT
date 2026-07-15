@@ -6,3 +6,4 @@ class OrderCreation(StatesGroup):
     to_location = State()
     phone = State()
     passenger_count = State()
+    cargo_description = State()  # "Pochta" tanlanganda yuk tavsifi
