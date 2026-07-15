@@ -17,6 +17,7 @@ from database.queries import (
     cancel_order,
     get_order,
     get_all_approved_driver_ids,
+    get_route_price,
 )
 from keyboards.common import cancel_keyboard
 from keyboards.passenger import (
@@ -31,10 +32,10 @@ from states.passenger_states import OrderCreation
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Yo'nalish → settings key xaritasi
-ROUTE_KEYS = {
-    "🚕 Toshkentdan → Bekobodga": "price_tashkent_bekobod",
-    "🚕 Bekoboddan → Toshkentga": "price_bekobod_tashkent",
+# Yo'nalish tugma matni → (qayerdan, qayerga, settings_key)
+ROUTE_INFO = {
+    "🚕 Toshkentdan → Bekobodga": ("Toshkent", "Bekobod", "price_tashkent_bekobod"),
+    "🚕 Bekoboddan → Toshkentga": ("Bekobod", "Toshkent", "price_bekobod_tashkent"),
 }
 
 COUNT_BUTTONS = {
@@ -90,7 +91,7 @@ async def order_route(message: Message, state: FSMContext) -> None:
         await message.answer("Bekor qilindi.", reply_markup=passenger_menu_keyboard())
         return
 
-    if message.text not in ROUTE_KEYS:
+    if message.text not in ROUTE_INFO:
         await message.answer(
             "Iltimos, quyidagi tugmalardan birini tanlang! ⬇️",
             reply_markup=route_keyboard(),
@@ -179,28 +180,30 @@ async def _finish_order(
     data = await state.get_data()
     await state.clear()
 
-    route = data["route"]           # "🚌 Toshkent → Bekobod"
+    route = data["route"]   # masalan: "🚕 Toshkentdan → Bekobodga"
     phone = data["phone"]
-    route_key = ROUTE_KEYS[route]   # "price_tashkent_bekobod"
 
-    # Yo'lkira narxini bazadan olish
+    # Yo'nalishdan to'g'ri from/to va narx kalitini olamiz
+    from_loc, to_loc, route_key = ROUTE_INFO[route]
+    route_display = f"{from_loc} → {to_loc}"
+
+    # Narxni bazadan olamiz
     async with AsyncSessionLocal() as session:
         price = await get_route_price(session, route_key)
 
-    # Yo'nalishdan qayerdan/qayerga ajratamiz
-    parts = route.replace("🚌 ", "").split(" → ")
-    from_loc = parts[0].strip()
-    to_loc = parts[1].strip()
-
     if cargo:
+        # Pochta — kelishuv asosida
         count_label = f"📮 Pochta: {cargo}"
         passenger_count_db = 0
+        price_label = "💵 Yo'lkira: <b>Kelishuv asosida</b>"
     else:
+        # Yo'lovchi — admin belgilagan narx
         count_label = f"👥 {count} kishi"
         passenger_count_db = count
-
-    # Yo'lkira qatori — har doim "kelishuv asosida"
-    price_label = "💵 Yo'lkira: <b>Kelishuv asosida</b>"
+        if price > 0:
+            price_label = f"💵 Yo'lkira: <b>{price:,} so'm</b>"
+        else:
+            price_label = "💵 Yo'lkira: <b>Kelishuv asosida</b>"
 
     async with AsyncSessionLocal() as session:
         order = await create_order(
@@ -215,7 +218,7 @@ async def _finish_order(
 
     summary = (
         f"📋 <b>Buyurtma ma'lumotlari:</b>\n\n"
-        f"🚌 Yo'nalish: {route.replace('🚌 ', '')}\n"
+        f"🚕 Yo'nalish: {route_display}\n"
         f"📱 Telefon: {phone}\n"
         f"{count_label}\n"
         f"{price_label}\n\n"
@@ -256,14 +259,25 @@ async def confirm_order_callback(callback: CallbackQuery, bot: Bot) -> None:
 
 
 async def _broadcast_order(bot: Bot, order) -> None:
+    route_display = f"{order.from_location} → {order.to_location}"
+
     if order.cargo_description:
         count_line = f"📮 Pochta: {order.cargo_description}"
+        price_line = "\n💵 Yo'lkira: Kelishuv asosida"
     else:
         count_line = f"👥 {order.passenger_count} kishi"
-
-    # Yo'lkira — kelishuv asosida
-    route_label = f"{order.from_location} → {order.to_location}"
-    price_line = "\n💵 Yo'lkira: Kelishuv asosida"
+        # Yo'nalishga qarab narx kalitini topamiz
+        route_key_map = {
+            "Toshkent": "price_tashkent_bekobod",
+            "Bekobod":  "price_bekobod_tashkent",
+        }
+        rkey = route_key_map.get(order.from_location, "")
+        price_line = ""
+        if rkey:
+            async with AsyncSessionLocal() as session:
+                price = await get_route_price(session, rkey)
+            if price > 0:
+                price_line = f"\n💵 Yo'lkira: {price:,} so'm"
 
     # Admin kanaliga
     try:
@@ -271,7 +285,7 @@ async def _broadcast_order(bot: Bot, order) -> None:
             chat_id=ORDERS_CHANNEL_ID,
             text=(
                 f"🆕 <b>YANGI BUYURTMA #{order.id}</b>\n\n"
-                f"🚌 {route_label}\n"
+                f"🚕 {route_display}\n"
                 f"{count_line}{price_line}\n"
                 f"📱 Telefon: <code>{order.passenger_phone}</code>\n"
                 f"🆔 Yo'lovchi ID: <code>{order.passenger_id}</code>"
@@ -287,7 +301,7 @@ async def _broadcast_order(bot: Bot, order) -> None:
 
     driver_text = (
         f"🆕 <b>YANGI BUYURTMA #{order.id}</b>\n\n"
-        f"🚌 {route_label}\n"
+        f"🚕 {route_display}\n"
         f"{count_line}{price_line}"
     )
 
