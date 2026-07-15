@@ -95,25 +95,30 @@ async def driver_full_name(message: Message, state: FSMContext) -> None:
 
     await state.update_data(full_name=message.text.strip())
     await message.answer(
-        "📱 Telefon raqamingizni ulashing:",
-        reply_markup=share_contact_keyboard(),
+        "📱 Telefon raqamingizni kiriting:\n(Masalan: +998901234567)",
+        reply_markup=cancel_keyboard(),
     )
     await state.set_state(DriverRegistration.phone)
 
 
-@router.message(DriverRegistration.phone, F.contact)
+@router.message(DriverRegistration.phone, F.text)
 async def driver_phone_contact(message: Message, state: FSMContext) -> None:
-    await state.update_data(phone=message.contact.phone_number)
+    if message.text == "❌ Bekor qilish":
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=role_select_keyboard())
+        return
+
+    phone = message.text.strip()
+    if len(phone) < 7:
+        await message.answer("❗ To'g'ri telefon raqam kiriting (masalan: +998901234567).")
+        return
+
+    await state.update_data(phone=phone)
     await message.answer(
         "🚗 Mashina rusumini kiriting (masalan: Chevrolet Cobalt):",
         reply_markup=cancel_keyboard(),
     )
     await state.set_state(DriverRegistration.car_model)
-
-
-@router.message(DriverRegistration.phone, F.text)
-async def driver_phone_text(message: Message) -> None:
-    await message.answer("Iltimos, tugma orqali telefon raqamingizni ulashing! ⬇️")
 
 
 @router.message(DriverRegistration.car_model, F.text)

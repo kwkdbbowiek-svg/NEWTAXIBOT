@@ -113,26 +113,31 @@ async def order_to_location(message: Message, state: FSMContext) -> None:
 
     await state.update_data(to_location=message.text.strip())
     await message.answer(
-        "📱 Telefon raqamingizni ulashing:",
-        reply_markup=share_contact_keyboard(),
+        "📱 Telefon raqamingizni kiriting:\n(Masalan: +998901234567)",
+        reply_markup=cancel_keyboard(),
     )
     await state.set_state(OrderCreation.phone)
 
 
-@router.message(OrderCreation.phone, F.contact)
+@router.message(OrderCreation.phone, F.text)
 async def order_phone_contact(message: Message, state: FSMContext) -> None:
-    await state.update_data(phone=message.contact.phone_number)
+    if message.text == "❌ Bekor qilish":
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=passenger_menu_keyboard())
+        return
+
+    phone = message.text.strip()
+    if len(phone) < 7:
+        await message.answer("❗ To'g'ri telefon raqam kiriting (masalan: +998901234567).")
+        return
+
+    await state.update_data(phone=phone)
     await message.answer(
         "👥 <b>Necha kishi ketasiz?</b>\nRaqam kiriting:",
         reply_markup=cancel_keyboard(),
         parse_mode="HTML",
     )
     await state.set_state(OrderCreation.passenger_count)
-
-
-@router.message(OrderCreation.phone, F.text)
-async def order_phone_text(message: Message) -> None:
-    await message.answer("Iltimos, tugma orqali raqamingizni ulashing! ⬇️")
 
 
 @router.message(OrderCreation.passenger_count, F.text)
