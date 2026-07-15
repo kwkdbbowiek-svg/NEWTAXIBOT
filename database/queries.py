@@ -55,9 +55,8 @@ async def get_user(session: AsyncSession, user_id: int) -> User | None:
 
 
 async def set_user_role(session: AsyncSession, user_id: int, role: UserRole) -> None:
-    # role.value = "driver" yoki "passenger" — VARCHAR ga saqlash
     await session.execute(
-        text("UPDATE users SET role = :role WHERE id = :uid"),
+        text("UPDATE users SET role = :role::userrole WHERE id = :uid"),
         {"role": role.value, "uid": user_id},
     )
     await session.commit()
@@ -100,7 +99,7 @@ async def get_driver_by_user_id(session: AsyncSession, user_id: int) -> Driver |
 
 async def approve_driver(session: AsyncSession, user_id: int) -> Driver | None:
     await session.execute(
-        text("UPDATE drivers SET status = 'approved' WHERE user_id = :uid"),
+        text("UPDATE drivers SET status = 'approved'::driverstatus WHERE user_id = :uid"),
         {"uid": user_id},
     )
     await session.commit()
@@ -110,7 +109,7 @@ async def approve_driver(session: AsyncSession, user_id: int) -> Driver | None:
 
 async def reject_driver(session: AsyncSession, user_id: int) -> None:
     await session.execute(
-        text("UPDATE drivers SET status = 'rejected' WHERE user_id = :uid"),
+        text("UPDATE drivers SET status = 'rejected'::driverstatus WHERE user_id = :uid"),
         {"uid": user_id},
     )
     await session.commit()
@@ -232,7 +231,7 @@ async def claim_order_atomic(
                 await session.execute(
                     text("""
                         UPDATE orders
-                        SET status = 'claimed',
+                        SET status = 'claimed'::orderstatus,
                             driver_id = :did,
                             commission_charged = :comm,
                             updated_at = NOW()
@@ -269,7 +268,7 @@ async def cancel_order(
                 return False, "already_cancelled"
 
             await session.execute(
-                text("UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = :oid"),
+                text("UPDATE orders SET status = 'cancelled'::orderstatus, updated_at = NOW() WHERE id = :oid"),
                 {"oid": order_id},
             )
             return True, "success"
