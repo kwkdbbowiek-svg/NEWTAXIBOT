@@ -56,8 +56,7 @@ async def get_user(session: AsyncSession, user_id: int) -> User | None:
 
 async def set_user_role(session: AsyncSession, user_id: int, role: UserRole) -> None:
     await session.execute(
-        text("UPDATE users SET role = :role::userrole WHERE id = :uid"),
-        {"role": role.value, "uid": user_id},
+        update(User).where(User.id == user_id).values(role=role)
     )
     await session.commit()
 
@@ -98,9 +97,9 @@ async def get_driver_by_user_id(session: AsyncSession, user_id: int) -> Driver |
 
 
 async def approve_driver(session: AsyncSession, user_id: int) -> Driver | None:
+    from database.models import DriverStatus
     await session.execute(
-        text("UPDATE drivers SET status = 'approved'::driverstatus WHERE user_id = :uid"),
-        {"uid": user_id},
+        update(Driver).where(Driver.user_id == user_id).values(status=DriverStatus.APPROVED)
     )
     await session.commit()
     result = await session.execute(select(Driver).where(Driver.user_id == user_id))
@@ -108,9 +107,9 @@ async def approve_driver(session: AsyncSession, user_id: int) -> Driver | None:
 
 
 async def reject_driver(session: AsyncSession, user_id: int) -> None:
+    from database.models import DriverStatus
     await session.execute(
-        text("UPDATE drivers SET status = 'rejected'::driverstatus WHERE user_id = :uid"),
-        {"uid": user_id},
+        update(Driver).where(Driver.user_id == user_id).values(status=DriverStatus.REJECTED)
     )
     await session.commit()
 
@@ -187,57 +186,55 @@ async def claim_order_atomic(
     commission: float,
 ) -> tuple[bool, str]:
     """
-    Atomic tranzaksiya — faqat bitta haydovchi zakaz oladi.
-    Raw SQL ishlatiladi chunki PostgreSQL da enum cast muammosi bor.
+    Atomic tranzaksiya — SQLAlchemy ORM orqali, enum muammosiz.
     """
     from database.engine import AsyncSessionLocal
+    from database.models import OrderStatus, DriverStatus
 
     async with AsyncSessionLocal() as session:
         try:
             async with session.begin():
-                # 1. Buyurtmani qulflash va tekshirish
                 lock = "FOR UPDATE" if _USE_FOR_UPDATE else ""
+
+                # 1. Buyurtma holati tekshirish
                 order_row = (await session.execute(
-                    text(f"SELECT id, status, passenger_count FROM orders WHERE id = :oid {lock}"),
+                    text(f"SELECT id, status::text, passenger_count FROM orders WHERE id = :oid {lock}"),
                     {"oid": order_id},
                 )).fetchone()
 
                 if not order_row:
                     return False, "order_not_found"
-                order_status = str(order_row[1]).lower()
-                if "pending" not in order_status:
+                if "pending" not in str(order_row[1]).lower():
                     return False, "already_claimed"
 
-                # 2. Haydovchini qulflash va tekshirish
+                # 2. Haydovchi holati tekshirish
                 driver_row = (await session.execute(
-                    text(f"SELECT user_id, status, balance FROM drivers WHERE user_id = :uid {lock}"),
+                    text(f"SELECT user_id, status::text, balance FROM drivers WHERE user_id = :uid {lock}"),
                     {"uid": driver_user_id},
                 )).fetchone()
 
                 if not driver_row:
                     return False, "driver_not_found"
-                driver_status = str(driver_row[1]).lower()
-                if "approved" not in driver_status:
+                if "approved" not in str(driver_row[1]).lower():
                     return False, "driver_not_approved"
                 if float(driver_row[2]) < commission:
                     return False, "insufficient_balance"
 
-                # 3. Atomic yangilash
+                # 3. ORM orqali yangilash — enum avtomatik hal bo'ladi
                 new_balance = round(float(driver_row[2]) - commission)
                 await session.execute(
-                    text("UPDATE drivers SET balance = :bal WHERE user_id = :uid"),
-                    {"bal": new_balance, "uid": driver_user_id},
+                    update(Driver)
+                    .where(Driver.user_id == driver_user_id)
+                    .values(balance=new_balance)
                 )
                 await session.execute(
-                    text("""
-                        UPDATE orders
-                        SET status = 'claimed'::orderstatus,
-                            driver_id = :did,
-                            commission_charged = :comm,
-                            updated_at = NOW()
-                        WHERE id = :oid
-                    """),
-                    {"did": driver_user_id, "comm": commission, "oid": order_id},
+                    update(Order)
+                    .where(Order.id == order_id)
+                    .values(
+                        status=OrderStatus.CLAIMED,
+                        driver_id=driver_user_id,
+                        commission_charged=commission,
+                    )
                 )
                 return True, "success"
 
@@ -255,7 +252,7 @@ async def cancel_order(
         async with session.begin():
             lock = "FOR UPDATE" if _USE_FOR_UPDATE else ""
             row = (await session.execute(
-                text(f"SELECT status FROM orders WHERE id = :oid AND passenger_id = :pid {lock}"),
+                text(f"SELECT status::text FROM orders WHERE id = :oid AND passenger_id = :pid {lock}"),
                 {"oid": order_id, "pid": passenger_id},
             )).fetchone()
 
@@ -267,9 +264,11 @@ async def cancel_order(
             if "cancelled" in status:
                 return False, "already_cancelled"
 
+            from database.models import OrderStatus
             await session.execute(
-                text("UPDATE orders SET status = 'cancelled'::orderstatus, updated_at = NOW() WHERE id = :oid"),
-                {"oid": order_id},
+                update(Order)
+                .where(Order.id == order_id)
+                .values(status=OrderStatus.CANCELLED)
             )
             return True, "success"
 
