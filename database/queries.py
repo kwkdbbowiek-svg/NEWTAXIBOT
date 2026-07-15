@@ -1,26 +1,27 @@
 """
 Ma'lumotlar bazasi so'rovlari (CRUD).
 
-SQLite (test):    FOR UPDATE ishlatilmaydi (aiosqlite serialized).
-PostgreSQL (prod): FOR UPDATE (Pessimistic Lock) to'liq ishlaydi.
+PostgreSQL bazasida role/status ustunlari VARCHAR sifatida saqlangan.
+Barcha taqqoslashlar raw SQL text() orqali amalga oshiriladi.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
+from datetime import datetime, date
 
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config import DATABASE_URL
-from database.models import User, Driver, Order, Settings, UserRole, DriverStatus, OrderStatus
+from database.models import User, Driver, Order, Settings, UserRole
 
 logger = logging.getLogger(__name__)
 
 _USE_FOR_UPDATE = not DATABASE_URL.startswith("sqlite")
 _IS_SQLITE = DATABASE_URL.startswith("sqlite")
+
 
 # ─────────────────────────────────────────────
 # FOYDALANUVCHI
@@ -32,15 +33,10 @@ async def get_or_create_user(
     username: str | None,
     full_name: str,
 ) -> User:
-    """
-    Foydalanuvchini oladi yoki yaratadi.
-    Race condition (parallel /start) uchun IntegrityError ushlaydi.
-    """
     result = await session.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user:
         return user
-
     try:
         user = User(id=user_id, username=username, full_name=full_name)
         session.add(user)
@@ -48,7 +44,6 @@ async def get_or_create_user(
         await session.refresh(user)
         return user
     except IntegrityError:
-        # Parallel so'rov allaqachon yaratib qo'ygan — qayta o'qiymiz
         await session.rollback()
         result = await session.execute(select(User).where(User.id == user_id))
         return result.scalar_one()
@@ -60,14 +55,15 @@ async def get_user(session: AsyncSession, user_id: int) -> User | None:
 
 
 async def set_user_role(session: AsyncSession, user_id: int, role: UserRole) -> None:
+    # role.value = "driver" yoki "passenger" — VARCHAR ga saqlash
     await session.execute(
-        update(User).where(User.id == user_id).values(role=role.value)
+        text("UPDATE users SET role = :role WHERE id = :uid"),
+        {"role": role.value, "uid": user_id},
     )
     await session.commit()
 
 
 async def get_all_users_ids(session: AsyncSession) -> list[int]:
-    """Faqat ID larni qaytaradi — katta bazada xotira tejaladi."""
     result = await session.execute(select(User.id))
     return list(result.scalars().all())
 
@@ -103,9 +99,9 @@ async def get_driver_by_user_id(session: AsyncSession, user_id: int) -> Driver |
 
 
 async def approve_driver(session: AsyncSession, user_id: int) -> Driver | None:
-    from sqlalchemy import cast, String
     await session.execute(
-        update(Driver).where(Driver.user_id == user_id).values(status="approved")
+        text("UPDATE drivers SET status = 'approved' WHERE user_id = :uid"),
+        {"uid": user_id},
     )
     await session.commit()
     result = await session.execute(select(Driver).where(Driver.user_id == user_id))
@@ -114,27 +110,24 @@ async def approve_driver(session: AsyncSession, user_id: int) -> Driver | None:
 
 async def reject_driver(session: AsyncSession, user_id: int) -> None:
     await session.execute(
-        update(Driver).where(Driver.user_id == user_id).values(status="rejected")
+        text("UPDATE drivers SET status = 'rejected' WHERE user_id = :uid"),
+        {"uid": user_id},
     )
     await session.commit()
 
 
 async def get_all_approved_driver_ids(session: AsyncSession) -> list[int]:
-    """Faqat tasdiqlangan haydovchilarning user_id larini qaytaradi."""
-    from sqlalchemy import cast, String
-    # Barcha haydovchilarni olib, Python tomonida filtrlash
-    # Bu usul bazadagi status formati qanday bo'lishidan qat'iy nazar ishlaydi
+    """Tasdiqlangan haydovchilarning user_id larini raw SQL bilan oladi."""
     result = await session.execute(
-        select(Driver.user_id, Driver.status).where(Driver.is_active == True)
+        text("""
+            SELECT user_id FROM drivers
+            WHERE status::text ILIKE '%approved%'
+              AND is_active = true
+        """)
     )
-    rows = result.all()
-    approved_ids = []
-    for user_id, status in rows:
-        status_str = str(status).lower()
-        if "approved" in status_str:
-            approved_ids.append(user_id)
-    logger.info(f"Approved driver IDs: {approved_ids} (jami {len(rows)} haydovchi)")
-    return approved_ids
+    ids = [row[0] for row in result.fetchall()]
+    logger.info(f"Tasdiqlangan haydovchilar: {len(ids)} ta")
+    return ids
 
 
 async def top_up_balance(session: AsyncSession, user_id: int, amount: float) -> Driver | None:
@@ -195,50 +188,58 @@ async def claim_order_atomic(
     commission: float,
 ) -> tuple[bool, str]:
     """
-    XAVFSIZ ATOMIC TRANZAKSIYA.
-    O'zi yangi session ochadi — tashqaridan session uzatilmaydi.
-
-    PostgreSQL: SELECT ... FOR UPDATE (pessimistic lock) — 10 000 haydovchi
-                bir vaqtda bosganida ham faqat bittasi buyurtmani oladi.
-    SQLite:     lock yo'q, aiosqlite serialized — test uchun yetarli.
-
-    Qaytaradi: (muvaffaqiyat: bool, sabab: str)
+    Atomic tranzaksiya — faqat bitta haydovchi zakaz oladi.
+    Raw SQL ishlatiladi chunki PostgreSQL da enum cast muammosi bor.
     """
     from database.engine import AsyncSessionLocal
 
     async with AsyncSessionLocal() as session:
         try:
             async with session.begin():
-                # 1. Buyurtmani qulflash
-                order_q = select(Order).where(Order.id == order_id)
-                if _USE_FOR_UPDATE:
-                    order_q = order_q.with_for_update(nowait=False)
-                order = (await session.execute(order_q)).scalar_one_or_none()
+                # 1. Buyurtmani qulflash va tekshirish
+                lock = "FOR UPDATE" if _USE_FOR_UPDATE else ""
+                order_row = (await session.execute(
+                    text(f"SELECT id, status, passenger_count FROM orders WHERE id = :oid {lock}"),
+                    {"oid": order_id},
+                )).fetchone()
 
-                if not order:
+                if not order_row:
                     return False, "order_not_found"
-                if order.status != OrderStatus.PENDING and str(order.status) not in ("pending", "OrderStatus.PENDING"):
+                order_status = str(order_row[1]).lower()
+                if "pending" not in order_status:
                     return False, "already_claimed"
 
-                # 2. Haydovchini qulflash
-                driver_q = select(Driver).where(Driver.user_id == driver_user_id)
-                if _USE_FOR_UPDATE:
-                    driver_q = driver_q.with_for_update(nowait=False)
-                driver = (await session.execute(driver_q)).scalar_one_or_none()
+                # 2. Haydovchini qulflash va tekshirish
+                driver_row = (await session.execute(
+                    text(f"SELECT user_id, status, balance FROM drivers WHERE user_id = :uid {lock}"),
+                    {"uid": driver_user_id},
+                )).fetchone()
 
-                if not driver:
+                if not driver_row:
                     return False, "driver_not_found"
-                if str(driver.status) not in ("approved", "DriverStatus.APPROVED"):
+                driver_status = str(driver_row[1]).lower()
+                if "approved" not in driver_status:
                     return False, "driver_not_approved"
-                if driver.balance < commission:
+                if float(driver_row[2]) < commission:
                     return False, "insufficient_balance"
 
-                # 3. Atomic o'zgarishlar
-                driver.balance = round(driver.balance - commission)
-                order.status = "claimed"
-                order.driver_id = driver_user_id
-                order.commission_charged = commission
-
+                # 3. Atomic yangilash
+                new_balance = round(float(driver_row[2]) - commission)
+                await session.execute(
+                    text("UPDATE drivers SET balance = :bal WHERE user_id = :uid"),
+                    {"bal": new_balance, "uid": driver_user_id},
+                )
+                await session.execute(
+                    text("""
+                        UPDATE orders
+                        SET status = 'claimed',
+                            driver_id = :did,
+                            commission_charged = :comm,
+                            updated_at = NOW()
+                        WHERE id = :oid
+                    """),
+                    {"did": driver_user_id, "comm": commission, "oid": order_id},
+                )
                 return True, "success"
 
         except Exception as e:
@@ -251,26 +252,26 @@ async def cancel_order(
     order_id: int,
     passenger_id: int,
 ) -> tuple[bool, str]:
-    """Buyurtmani bekor qilish — tranzaksiya ichida."""
     try:
         async with session.begin():
-            order_q = select(Order).where(
-                Order.id == order_id,
-                Order.passenger_id == passenger_id,
-            )
-            if _USE_FOR_UPDATE:
-                order_q = order_q.with_for_update(nowait=False)
+            lock = "FOR UPDATE" if _USE_FOR_UPDATE else ""
+            row = (await session.execute(
+                text(f"SELECT status FROM orders WHERE id = :oid AND passenger_id = :pid {lock}"),
+                {"oid": order_id, "pid": passenger_id},
+            )).fetchone()
 
-            order = (await session.execute(order_q)).scalar_one_or_none()
-
-            if not order:
+            if not row:
                 return False, "not_found"
-            if str(order.status) in ("claimed", "OrderStatus.CLAIMED"):
+            status = str(row[0]).lower()
+            if "claimed" in status:
                 return False, "already_claimed"
-            if str(order.status) in ("cancelled", "OrderStatus.CANCELLED"):
+            if "cancelled" in status:
                 return False, "already_cancelled"
 
-            order.status = "cancelled"
+            await session.execute(
+                text("UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = :oid"),
+                {"oid": order_id},
+            )
             return True, "success"
 
     except Exception as e:
@@ -313,84 +314,36 @@ async def get_commission(session: AsyncSession) -> float:
 
 
 # ─────────────────────────────────────────────
-# STATISTIKA
+# STATISTIKA — to'liq raw SQL
 # ─────────────────────────────────────────────
 
 async def get_statistics(session: AsyncSession) -> dict:
-    from datetime import datetime, date
-    from sqlalchemy import cast, String
-
-    # Jami foydalanuvchilar
-    total_users = await session.scalar(
-        select(func.count()).select_from(User)
-    ) or 0
-
-    # Yo'lovchilar — role ustuni VARCHAR bo'lgani uchun string bilan taqqoslaymiz
-    total_passengers = await session.scalar(
-        select(func.count()).select_from(User).where(
-            cast(User.role, String) == "passenger"
-        )
-    ) or 0
-
-    # Tasdiqlangan haydovchilar
-    total_drivers_approved = await session.scalar(
-        select(func.count()).select_from(Driver).where(
-            cast(Driver.status, String) == "approved"
-        )
-    ) or 0
-
-    # Kutayotgan (tasdiqlash kerak) haydovchilar
-    total_drivers_pending = await session.scalar(
-        select(func.count()).select_from(Driver).where(
-            cast(Driver.status, String) == "pending"
-        )
-    ) or 0
-
-    # Jami bajarilgan zakazlar
-    total_orders_done = await session.scalar(
-        select(func.count()).select_from(Order).where(
-            cast(Order.status, String) == "claimed"
-        )
-    ) or 0
-
-    # Aktiv (kutayotgan) zakazlar
-    total_orders_pending = await session.scalar(
-        select(func.count()).select_from(Order).where(
-            cast(Order.status, String) == "pending"
-        )
-    ) or 0
-
-    # Bekor qilingan zakazlar
-    total_orders_cancelled = await session.scalar(
-        select(func.count()).select_from(Order).where(
-            cast(Order.status, String) == "cancelled"
-        )
-    ) or 0
-
-    # Bugungi bajarilgan zakazlar
     today_start = datetime.combine(date.today(), datetime.min.time())
-    total_orders_today = await session.scalar(
-        select(func.count()).select_from(Order).where(
-            cast(Order.status, String) == "claimed",
-            Order.updated_at >= today_start,
-        )
-    ) or 0
 
-    # Jami yig'ilgan komissiya (so'mda)
-    total_commission = await session.scalar(
-        select(func.coalesce(func.sum(Order.commission_charged), 0)).select_from(Order).where(
-            cast(Order.status, String) == "claimed"
-        )
-    ) or 0
+    rows = (await session.execute(text("""
+        SELECT
+            (SELECT COUNT(*) FROM users)                                          AS total_users,
+            (SELECT COUNT(*) FROM users WHERE role::text ILIKE '%passenger%')     AS total_passengers,
+            (SELECT COUNT(*) FROM drivers WHERE status::text ILIKE '%approved%')  AS drivers_approved,
+            (SELECT COUNT(*) FROM drivers WHERE status::text ILIKE '%pending%')   AS drivers_pending,
+            (SELECT COUNT(*) FROM orders WHERE status::text ILIKE '%claimed%')    AS orders_done,
+            (SELECT COUNT(*) FROM orders WHERE status::text ILIKE '%pending%')    AS orders_pending,
+            (SELECT COUNT(*) FROM orders WHERE status::text ILIKE '%cancelled%')  AS orders_cancelled,
+            (SELECT COUNT(*) FROM orders
+             WHERE status::text ILIKE '%claimed%'
+               AND updated_at >= :today)                                          AS orders_today,
+            (SELECT COALESCE(SUM(commission_charged), 0)
+             FROM orders WHERE status::text ILIKE '%claimed%')                    AS total_commission
+    """), {"today": today_start})).fetchone()
 
     return {
-        "total_users": total_users,
-        "total_passengers": total_passengers,
-        "total_drivers_approved": total_drivers_approved,
-        "total_drivers_pending": total_drivers_pending,
-        "total_orders_done": total_orders_done,
-        "total_orders_pending": total_orders_pending,
-        "total_orders_cancelled": total_orders_cancelled,
-        "total_orders_today": total_orders_today,
-        "total_commission": int(total_commission),
+        "total_users":           int(rows[0] or 0),
+        "total_passengers":      int(rows[1] or 0),
+        "total_drivers_approved": int(rows[2] or 0),
+        "total_drivers_pending":  int(rows[3] or 0),
+        "total_orders_done":     int(rows[4] or 0),
+        "total_orders_pending":  int(rows[5] or 0),
+        "total_orders_cancelled": int(rows[6] or 0),
+        "total_orders_today":    int(rows[7] or 0),
+        "total_commission":      int(rows[8] or 0),
     }
