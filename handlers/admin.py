@@ -337,8 +337,8 @@ async def admin_price_route(message: Message, state: FSMContext) -> None:
         return
 
     route_map = {
-        "🚌 Toshkent → Bekobod narxi": "price_tashkent_bekobod",
-        "🚌 Bekobod → Toshkent narxi": "price_bekobod_tashkent",
+        "🚕 Toshkentdan → Bekobodga narxi": "price_tashkent_bekobod",
+        "🚕 Bekoboddan → Toshkentga narxi": "price_bekobod_tashkent",
     }
     if message.text not in route_map:
         await message.answer(

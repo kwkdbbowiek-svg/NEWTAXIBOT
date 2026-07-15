@@ -12,8 +12,8 @@ def passenger_menu_keyboard() -> ReplyKeyboardMarkup:
 def route_keyboard() -> ReplyKeyboardMarkup:
     """Yo'nalish tanlash — 2 ta tugma."""
     builder = ReplyKeyboardBuilder()
-    builder.row(KeyboardButton(text="🚌 Toshkent → Bekobod"))
-    builder.row(KeyboardButton(text="🚌 Bekobod → Toshkent"))
+    builder.row(KeyboardButton(text="🚕 Toshkentdan → Bekobodga"))
+    builder.row(KeyboardButton(text="🚕 Bekoboddan → Toshkentga"))
     builder.row(KeyboardButton(text="❌ Bekor qilish"))
     return builder.as_markup(resize_keyboard=True)
 

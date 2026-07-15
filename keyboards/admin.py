@@ -22,8 +22,8 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
 def price_route_keyboard() -> ReplyKeyboardMarkup:
     """Yo'lkira narxini o'zgartirish uchun yo'nalish tanlash."""
     builder = ReplyKeyboardBuilder()
-    builder.row(KeyboardButton(text="🚌 Toshkent → Bekobod narxi"))
-    builder.row(KeyboardButton(text="🚌 Bekobod → Toshkent narxi"))
+    builder.row(KeyboardButton(text="🚕 Toshkentdan → Bekobodga narxi"))
+    builder.row(KeyboardButton(text="🚕 Bekoboddan → Toshkentga narxi"))
     builder.row(KeyboardButton(text="❌ Bekor qilish"))
     return builder.as_markup(resize_keyboard=True)
 

@@ -17,7 +17,6 @@ from database.queries import (
     cancel_order,
     get_order,
     get_all_approved_driver_ids,
-    get_route_price,
 )
 from keyboards.common import cancel_keyboard
 from keyboards.passenger import (
@@ -34,8 +33,8 @@ router = Router()
 
 # Yo'nalish → settings key xaritasi
 ROUTE_KEYS = {
-    "🚌 Toshkent → Bekobod": "price_tashkent_bekobod",
-    "🚌 Bekobod → Toshkent": "price_bekobod_tashkent",
+    "🚕 Toshkentdan → Bekobodga": "price_tashkent_bekobod",
+    "🚕 Bekoboddan → Toshkentga": "price_bekobod_tashkent",
 }
 
 COUNT_BUTTONS = {
@@ -77,7 +76,7 @@ async def start_order(message: Message, state: FSMContext, user_role: str | None
     if user_role != "passenger":
         return
     await message.answer(
-        "🚌 <b>Yo'nalishni tanlang:</b>",
+        "🚕 <b>Qayerdan qayerga borishingizni tanlang:</b>",
         reply_markup=route_keyboard(),
         parse_mode="HTML",
     )
@@ -200,11 +199,8 @@ async def _finish_order(
         count_label = f"👥 {count} kishi"
         passenger_count_db = count
 
-    # Yo'lkira qatori
-    if price > 0:
-        price_label = f"💵 Yo'lkira: <b>{price:,} so'm</b>"
-    else:
-        price_label = "💵 Yo'lkira: <b>Belgilanmagan</b>"
+    # Yo'lkira qatori — har doim "kelishuv asosida"
+    price_label = "💵 Yo'lkira: <b>Kelishuv asosida</b>"
 
     async with AsyncSessionLocal() as session:
         order = await create_order(
@@ -265,20 +261,9 @@ async def _broadcast_order(bot: Bot, order) -> None:
     else:
         count_line = f"👥 {order.passenger_count} kishi"
 
-    # Yo'lkira narxini ham haydovchilarga ko'rsatamiz
+    # Yo'lkira — kelishuv asosida
     route_label = f"{order.from_location} → {order.to_location}"
-    route_key_map = {
-        "Toshkent → Bekobod": "price_tashkent_bekobod",
-        "Bekobod → Toshkent": "price_bekobod_tashkent",
-    }
-    price_line = ""
-    for route_text, rkey in route_key_map.items():
-        if order.from_location in route_text and order.to_location in route_text:
-            async with AsyncSessionLocal() as session:
-                price = await get_route_price(session, rkey)
-            if price > 0:
-                price_line = f"\n💵 Yo'lkira: {price:,} so'm"
-            break
+    price_line = "\n💵 Yo'lkira: Kelishuv asosida"
 
     # Admin kanaliga
     try:
