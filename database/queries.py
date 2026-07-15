@@ -60,7 +60,9 @@ async def get_user(session: AsyncSession, user_id: int) -> User | None:
 
 
 async def set_user_role(session: AsyncSession, user_id: int, role: UserRole) -> None:
-    await session.execute(update(User).where(User.id == user_id).values(role=role))
+    await session.execute(
+        update(User).where(User.id == user_id).values(role=role.value)
+    )
     await session.commit()
 
 
@@ -101,8 +103,9 @@ async def get_driver_by_user_id(session: AsyncSession, user_id: int) -> Driver |
 
 
 async def approve_driver(session: AsyncSession, user_id: int) -> Driver | None:
+    from sqlalchemy import cast, String
     await session.execute(
-        update(Driver).where(Driver.user_id == user_id).values(status=DriverStatus.APPROVED)
+        update(Driver).where(Driver.user_id == user_id).values(status="approved")
     )
     await session.commit()
     result = await session.execute(select(Driver).where(Driver.user_id == user_id))
@@ -111,16 +114,17 @@ async def approve_driver(session: AsyncSession, user_id: int) -> Driver | None:
 
 async def reject_driver(session: AsyncSession, user_id: int) -> None:
     await session.execute(
-        update(Driver).where(Driver.user_id == user_id).values(status=DriverStatus.REJECTED)
+        update(Driver).where(Driver.user_id == user_id).values(status="rejected")
     )
     await session.commit()
 
 
 async def get_all_approved_driver_ids(session: AsyncSession) -> list[int]:
     """Faqat tasdiqlangan haydovchilarning user_id larini qaytaradi."""
+    from sqlalchemy import cast, String
     result = await session.execute(
         select(Driver.user_id).where(
-            Driver.status == DriverStatus.APPROVED,
+            cast(Driver.status, String) == "approved",
             Driver.is_active == True,
         )
     )
@@ -207,7 +211,7 @@ async def claim_order_atomic(
 
                 if not order:
                     return False, "order_not_found"
-                if order.status != OrderStatus.PENDING:
+                if order.status != OrderStatus.PENDING and str(order.status) not in ("pending", "OrderStatus.PENDING"):
                     return False, "already_claimed"
 
                 # 2. Haydovchini qulflash
@@ -218,14 +222,14 @@ async def claim_order_atomic(
 
                 if not driver:
                     return False, "driver_not_found"
-                if driver.status != DriverStatus.APPROVED:
+                if str(driver.status) not in ("approved", "DriverStatus.APPROVED"):
                     return False, "driver_not_approved"
                 if driver.balance < commission:
                     return False, "insufficient_balance"
 
                 # 3. Atomic o'zgarishlar
                 driver.balance = round(driver.balance - commission)
-                order.status = OrderStatus.CLAIMED
+                order.status = "claimed"
                 order.driver_id = driver_user_id
                 order.commission_charged = commission
 
@@ -255,12 +259,12 @@ async def cancel_order(
 
             if not order:
                 return False, "not_found"
-            if order.status == OrderStatus.CLAIMED:
+            if str(order.status) in ("claimed", "OrderStatus.CLAIMED"):
                 return False, "already_claimed"
-            if order.status == OrderStatus.CANCELLED:
+            if str(order.status) in ("cancelled", "OrderStatus.CANCELLED"):
                 return False, "already_cancelled"
 
-            order.status = OrderStatus.CANCELLED
+            order.status = "cancelled"
             return True, "success"
 
     except Exception as e:
@@ -308,47 +312,60 @@ async def get_commission(session: AsyncSession) -> float:
 
 async def get_statistics(session: AsyncSession) -> dict:
     from datetime import datetime, date
+    from sqlalchemy import cast, String
 
     # Jami foydalanuvchilar
     total_users = await session.scalar(
         select(func.count()).select_from(User)
     ) or 0
 
-    # Yo'lovchilar
+    # Yo'lovchilar — role ustuni VARCHAR bo'lgani uchun string bilan taqqoslaymiz
     total_passengers = await session.scalar(
-        select(func.count()).select_from(User).where(User.role == UserRole.PASSENGER)
+        select(func.count()).select_from(User).where(
+            cast(User.role, String) == "passenger"
+        )
     ) or 0
 
     # Tasdiqlangan haydovchilar
     total_drivers_approved = await session.scalar(
-        select(func.count()).select_from(Driver).where(Driver.status == DriverStatus.APPROVED)
+        select(func.count()).select_from(Driver).where(
+            cast(Driver.status, String) == "approved"
+        )
     ) or 0
 
     # Kutayotgan (tasdiqlash kerak) haydovchilar
     total_drivers_pending = await session.scalar(
-        select(func.count()).select_from(Driver).where(Driver.status == DriverStatus.PENDING)
+        select(func.count()).select_from(Driver).where(
+            cast(Driver.status, String) == "pending"
+        )
     ) or 0
 
     # Jami bajarilgan zakazlar
     total_orders_done = await session.scalar(
-        select(func.count()).select_from(Order).where(Order.status == OrderStatus.CLAIMED)
+        select(func.count()).select_from(Order).where(
+            cast(Order.status, String) == "claimed"
+        )
     ) or 0
 
     # Aktiv (kutayotgan) zakazlar
     total_orders_pending = await session.scalar(
-        select(func.count()).select_from(Order).where(Order.status == OrderStatus.PENDING)
+        select(func.count()).select_from(Order).where(
+            cast(Order.status, String) == "pending"
+        )
     ) or 0
 
     # Bekor qilingan zakazlar
     total_orders_cancelled = await session.scalar(
-        select(func.count()).select_from(Order).where(Order.status == OrderStatus.CANCELLED)
+        select(func.count()).select_from(Order).where(
+            cast(Order.status, String) == "cancelled"
+        )
     ) or 0
 
-    # Bugungi zakazlar (CLAIMED)
+    # Bugungi bajarilgan zakazlar
     today_start = datetime.combine(date.today(), datetime.min.time())
     total_orders_today = await session.scalar(
         select(func.count()).select_from(Order).where(
-            Order.status == OrderStatus.CLAIMED,
+            cast(Order.status, String) == "claimed",
             Order.updated_at >= today_start,
         )
     ) or 0
@@ -356,7 +373,7 @@ async def get_statistics(session: AsyncSession) -> dict:
     # Jami yig'ilgan komissiya (so'mda)
     total_commission = await session.scalar(
         select(func.coalesce(func.sum(Order.commission_charged), 0)).select_from(Order).where(
-            Order.status == OrderStatus.CLAIMED
+            cast(Order.status, String) == "claimed"
         )
     ) or 0
 

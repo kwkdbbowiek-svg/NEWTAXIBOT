@@ -9,7 +9,6 @@ from aiogram.types import TelegramObject, Message, CallbackQuery
 from config import ADMIN_ID
 from database.engine import AsyncSessionLocal
 from database.queries import get_user
-from database.models import UserRole
 
 
 class RoleMiddleware(BaseMiddleware):
@@ -19,10 +18,7 @@ class RoleMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        # user_id ni aniqlash
-        if isinstance(event, Message):
-            user_id = event.from_user.id
-        elif isinstance(event, CallbackQuery):
+        if isinstance(event, (Message, CallbackQuery)):
             user_id = event.from_user.id
         else:
             return await handler(event, data)
@@ -36,7 +32,21 @@ class RoleMiddleware(BaseMiddleware):
         async with AsyncSessionLocal() as session:
             user = await get_user(session, user_id)
 
-        role = user.role.value if (user and user.role) else None
-        data["user_role"] = role  # "driver", "passenger", None
+        if user and user.role:
+            # PostgreSQL: VARCHAR bo'lsa str() — enum bo'lsa .value
+            raw = str(user.role)
+            if raw.lower() in ("driver", "userrole.driver"):
+                role = "driver"
+            elif raw.lower() in ("passenger", "userrole.passenger"):
+                role = "passenger"
+            else:
+                # enum.value usuli bilan urinib ko'ramiz
+                try:
+                    role = user.role.value
+                except AttributeError:
+                    role = raw.lower()
+        else:
+            role = None
 
+        data["user_role"] = role  # "driver", "passenger", None
         return await handler(event, data)

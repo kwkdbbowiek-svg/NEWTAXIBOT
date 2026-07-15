@@ -11,7 +11,7 @@ from aiogram.types import Message, CallbackQuery
 
 from config import ADMIN_ID, DRIVERS_CHANNEL_ID, ADMIN_USERNAME
 from database.engine import AsyncSessionLocal
-from database.models import UserRole, DriverStatus
+from database.models import UserRole
 from database.queries import (
     get_driver_by_user_id,
     create_driver,
@@ -58,9 +58,10 @@ async def driver_entry(message: Message, state: FSMContext, user_role: str | Non
         driver = await get_driver_by_user_id(session, message.from_user.id)
 
     if driver:
-        if driver.status == DriverStatus.APPROVED:
+        status = str(driver.status).lower()
+        if status in ("approved", "driverstatus.approved"):
             await message.answer("✅ Xush kelibsiz, haydovchi!", reply_markup=driver_menu_keyboard())
-        elif driver.status == DriverStatus.PENDING:
+        elif status in ("pending", "driverstatus.pending"):
             await message.answer(
                 "⏳ Ma'lumotlaringiz admin tomonidan ko'rib chiqilmoqda.\n"
                 "Natija haqida xabardor qilinasiz.",
@@ -222,7 +223,7 @@ async def show_balance(message: Message, user_role: str | None) -> None:
     async with AsyncSessionLocal() as session:
         driver = await get_driver_by_user_id(session, message.from_user.id)
 
-    if not driver or driver.status != DriverStatus.APPROVED:
+    if not driver or str(driver.status).lower() not in ("approved", "driverstatus.approved"):
         await message.answer("❌ Haydovchi sifatida tasdiqlanmagansiz.")
         return
 
