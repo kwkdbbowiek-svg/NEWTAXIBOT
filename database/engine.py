@@ -129,6 +129,17 @@ async def init_db() -> None:
                     END IF;
                 END $$;
                 """,
+                # orders.cargo_description
+                """
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='orders' AND column_name='cargo_description'
+                    ) THEN
+                        ALTER TABLE orders ADD COLUMN cargo_description TEXT DEFAULT NULL;
+                    END IF;
+                END $$;
+                """,
             ]
             for sql in migrations:
                 await conn.execute(text(sql))
